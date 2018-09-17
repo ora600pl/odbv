@@ -10,4 +10,9 @@ This tool is based on ODBV v1 but it is written in Python3 and it can help you t
 Details can be found in here: http://blog.ora-600.pl/2017/12/21/odbvv2-ghostdata-busters
 
 
+# ODBV v3
+This tools is a compilation of ODBV v1 and v2 - there is simpler usage and it will contain ASM support (comming soon).
+
+Details can be found in here: http://blog.ora-600.pl/2018/09/17/odbv3-more-comfortable-usage/
+
 

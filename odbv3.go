@@ -128,7 +128,7 @@ func (b *BlockData) ParseBlock(file *os.File, offset int64, block_size int64) {
 	if b.Kcbh.Type_kcbh == 6 {
 		binary.Read(file, binary.LittleEndian, &b.Ktbbh)
 		b.objId = b.Ktbbh.Ktbbhsid
-		if b.Ktbbh.Ktbbhtyp == 1 {
+		if b.Ktbbh.Ktbbhtyp == 1 && b.Ktbbh.Ktbbhict > 0 {
 			b.Ktbbhitl = make([]KTBBHITL, b.Ktbbh.Ktbbhict)
 			binary.Read(file, binary.LittleEndian, &b.Ktbbhitl)
 			type offset_flags struct {
@@ -167,7 +167,8 @@ func (b *BlockData) ParseBlock(file *os.File, offset int64, block_size int64) {
 					row_header == 8 ||
 					row_header == 4 ||
 					row_header == 2 ||
-					row_header == 1 {
+					row_header == 1 ||
+					row_header == 12 {
 					b.rows++
 					b.chainRows++
 				} else if row_header == 48 {
@@ -266,12 +267,12 @@ func (b *BlockData) colorBlock() {
 	}
 
 	if b.delRows > b.rows {
-		b.visualC = b.visualC.Add(color.Bold).Add(color.Underline)
+		b.visualC = b.visualC.Add(color.Underline)
 		keyWord += " contains more deleted then actual rows "
 	}
 
 	if b.chainRows > 0 {
-		b.visualC = b.visualC.Add(color.Bold).Add(color.Underline).Add(color.Italic).Add(color.Faint)
+		b.visualC = b.visualC.Add(color.Bold).Add(color.Italic).Add(color.Faint)
 		keyWord += " contains chained rows "
 	}
 

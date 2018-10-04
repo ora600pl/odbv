@@ -11,8 +11,10 @@ Details can be found in here: http://blog.ora-600.pl/2017/12/21/odbvv2-ghostdata
 
 
 # ODBV v3
-This tools is a compilation of ODBV v1 and v2 - there is simpler usage and it will contain ASM support (comming soon).
+This tools is a compilation of ODBV v1 and v2 - there is simpler usage and it will contains ASM support
 
 Details can be found in here: http://blog.ora-600.pl/2018/09/17/odbv3-more-comfortable-usage/
+
+About ASM support: http://blog.ora-600.pl/2018/10/04/odbv3-and-asm
 
 

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"github.com/fatih/color"
 	_ "gopkg.in/goracle.v2"
@@ -20,10 +22,10 @@ func banner() {
 }
 
 func usage() {
-	fmt.Println("./odbv3 -f path_to_a_data_file -b block_size -c user/password@host:port/service")
+	fmt.Println("./odbv3 -f path_to_a_data_file -b block_size -c user/password@host:port/service [-a user/pass@host:port/+ASM[n]]")
 }
 
-var DB *sql.DB
+var DB, ASM *sql.DB
 
 func connectDb(conn string) {
 	db, err := sql.Open("goracle", conn)
@@ -43,6 +45,29 @@ func connectDb(conn string) {
 		DB = db
 	} else {
 		log.Panic("Problem with DB connection")
+	}
+}
+
+func connectAsm(conn string) {
+	connSysdba := conn + " as sysdba"
+	db, err := sql.Open("goracle", connSysdba)
+	if err != nil {
+		log.Panic(err)
+	}
+	rows, err := db.Query("select 1 from dual")
+	if err != nil {
+		fmt.Println("ASM problem")
+		log.Panic(err)
+	}
+
+	check := 0
+	if rows.Next() {
+		rows.Scan(&check)
+	}
+	if check == 1 {
+		ASM = db
+	} else {
+		log.Panic("Problem with ASM connection")
 	}
 }
 
@@ -115,10 +140,11 @@ type BlockData struct {
 	visualC   *color.Color
 	visualS   string
 	objName   string
+	objOwner  string
 	objId     uint32
 }
 
-func (b *BlockData) ParseBlock(file *os.File, offset int64, block_size int64) {
+func (b *BlockData) ParseBlock(file io.ReadSeeker, offset int64, block_size int64) {
 	file.Seek(offset, io.SeekStart)
 	binary.Read(file, binary.LittleEndian, &b.Kcbh)
 	b.objId = 0
@@ -193,12 +219,15 @@ func (b *BlockData) ParseBlock(file *os.File, offset int64, block_size int64) {
 		binary.Read(file, binary.LittleEndian, &b.objId)
 	}
 	if b.objId != 0 {
-		q := "select nvl(max(object_name),'0GHOST0') from dba_objects where data_object_id="
+		q := "select nvl(max(owner), ' '), " +
+			"nvl(max(object_name),'0GHOST0') " +
+			"from dba_objects " +
+			"where data_object_id="
 		q += strconv.FormatUint(uint64(b.objId), 10)
 		rows, err := DB.Query(q)
 		if err == nil {
 			rows.Next()
-			rows.Scan(&b.objName)
+			rows.Scan(&b.objOwner, &b.objName)
 		}
 
 		b.colorBlock()
@@ -230,7 +259,7 @@ func (b *BlockData) colorBlock() {
 		color.New(color.FgCyan),
 		color.New(color.FgWhite)}
 
-	keyWord := b.objName + "(" + strconv.FormatUint(uint64(b.objId), 10) + ") "
+	keyWord := b.objOwner + "." + b.objName + "(" + strconv.FormatUint(uint64(b.objId), 10) + ") "
 
 	color_id, choosen := ColorMap[b.objName]
 	if choosen {
@@ -306,6 +335,8 @@ func main() {
 	wordSize := int64(8)
 	var fname string
 	var conn string
+	var conn_asm string
+	conn_asm = "empty"
 	var block_size int64
 	if len(os.Args) < 6 {
 		usage()
@@ -318,33 +349,89 @@ func main() {
 			conn = os.Args[i+1]
 		} else if os.Args[i] == "-b" {
 			block_size, _ = strconv.ParseInt(os.Args[i+1], 10, 32)
+		} else if os.Args[i] == "-a" {
+			conn_asm = os.Args[i+1]
 		}
 	}
 
 	connectDb(conn)
 	defer DB.Close()
 
-	f, err := os.Open(fname)
-	if err != nil {
-		log.Panic(err)
+	var blocks int64
+	if conn_asm != "empty" && fname[0] == '+' {
+		connectAsm(conn_asm)
+		defer ASM.Close()
+	} else if conn_asm == "empty" && fname[0] == '+' {
+		log.Panic("You have to specify ASM connect string in a form user/pass@ip:port/+ASM[n]")
 	}
-	defer f.Close()
-	fs, _ := f.Stat()
-	fsize := fs.Size()
-	blocks := int64(fsize) / block_size
-	block_data := BlockData{}
-	for i := int64(0); i < blocks; i++ {
-		block_data.ParseBlock(f, i*block_size, block_size)
-		c := block_data.visualC.SprintFunc()
-		if i%lineSize == 0 || i == 0 {
-			fmt.Printf("%08d - %08d: %s", i+1, i+lineSize, c(block_data.visualS))
-		} else if i > 0 && (i+1)%(lineSize) == 0 {
-			fmt.Println("o ")
-		} else if (i+1)%wordSize == 0 {
-			fmt.Printf("%2s%s", c(block_data.visualS), " ")
-		} else {
-			fmt.Printf("%2s", c(block_data.visualS))
+
+	if fname[0] != '+' {
+		f, err := os.Open(fname)
+		if err != nil {
+			log.Panic(err)
 		}
+		defer f.Close()
+		fs, _ := f.Stat()
+		fsize := fs.Size()
+		blocks = int64(fsize) / block_size
+
+		block_data := BlockData{}
+		for i := int64(0); i < blocks; i++ {
+			blockBytes := make([]byte, block_size)
+			f.Read(blockBytes)
+			blockReader := bytes.NewReader(blockBytes)
+			block_data.ParseBlock(blockReader, 0, block_size)
+			c := block_data.visualC.SprintFunc()
+			if i%lineSize == 0 || i == 0 {
+				fmt.Printf("%08d - %08d: %s", i+1, i+lineSize, c(block_data.visualS))
+			} else if i > 0 && (i+1)%(lineSize) == 0 {
+				fmt.Println("o ")
+			} else if (i+1)%wordSize == 0 {
+				fmt.Printf("%2s%s", c(block_data.visualS), " ")
+			} else {
+				fmt.Printf("%2s", c(block_data.visualS))
+			}
+		}
+	} else {
+		fsize := -1
+		ftype := -1
+		fblock := -1
+		fblock2 := -1
+		fhandle := -1
+		fsize2 := -1
+		ASM.Exec("begin dbms_diskgroup.getfileattr(:1, :2, :3, :4); end;", fname,
+			sql.Out{Dest: &ftype},
+			sql.Out{Dest: &fsize},
+			sql.Out{Dest: &fblock})
+		blocks = int64(fsize)
+		ASM.Exec("begin dbms_diskgroup.open(:1, 'r', :2, :3, :4, :5, :6); end;", fname, ftype, fblock,
+			sql.Out{Dest: &fhandle},
+			sql.Out{Dest: &fblock2},
+			sql.Out{Dest: &fsize2})
+		var block_data_s string
+		block_data := BlockData{}
+		for i := int64(0); i < blocks; i++ {
+			_, err := ASM.Exec("begin dbms_diskgroup.read(:1, :2, :3, :4); end;", fhandle, i+1, block_size,
+				sql.Out{Dest: &block_data_s})
+			if err != nil {
+				log.Panic(err)
+			}
+
+			blockBytes, _ := hex.DecodeString(block_data_s)
+			blockReader := bytes.NewReader(blockBytes)
+			block_data.ParseBlock(blockReader, 0, block_size)
+			c := block_data.visualC.SprintFunc()
+			if i%lineSize == 0 || i == 0 {
+				fmt.Printf("%08d - %08d: %s", i+1, i+lineSize, c(block_data.visualS))
+			} else if i > 0 && (i+1)%(lineSize) == 0 {
+				fmt.Println("o ")
+			} else if (i+1)%wordSize == 0 {
+				fmt.Printf("%2s%s", c(block_data.visualS), " ")
+			} else {
+				fmt.Printf("%2s", c(block_data.visualS))
+			}
+		}
+		ASM.Exec("begin dbms_diskgroup.close(:1) end;", fhandle)
 	}
 
 	fmt.Println("\n----- LEGEND -----")

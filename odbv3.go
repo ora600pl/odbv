@@ -22,7 +22,7 @@ func banner() {
 }
 
 func usage() {
-	fmt.Println("./odbv3 -f path_to_a_data_file -b block_size -c user/password@host:port/service [-a user/pass@host:port/+ASM[n]]")
+	fmt.Println("./odbv3 -f path_to_a_data_file -b block_size -c user/password@host:port/service [-a user/pass@host:port/+ASM[n]] [-rs (report space only)")
 }
 
 var DB, ASM *sql.DB
@@ -144,6 +144,8 @@ type BlockData struct {
 	objId     uint32
 }
 
+var ObjNames map[uint32]string
+
 func (b *BlockData) ParseBlock(file io.ReadSeeker, offset int64, block_size int64) {
 	file.Seek(offset, io.SeekStart)
 	binary.Read(file, binary.LittleEndian, &b.Kcbh)
@@ -218,17 +220,27 @@ func (b *BlockData) ParseBlock(file io.ReadSeeker, offset int64, block_size int6
 		file.Seek(offset+272, io.SeekStart)
 		binary.Read(file, binary.LittleEndian, &b.objId)
 	}
+	var objName string
+	var foundName bool
 	if b.objId != 0 {
+		objName, foundName = ObjNames[b.objId]
+	}
+
+	if foundName {
+		b.objOwner = strings.Split(objName, ".")[0]
+		b.objName = strings.Split(objName, ".")[1]
+		b.colorBlock()
+	} else if !foundName && b.objId != 0 {
 		q := "select nvl(max(owner), ' '), " +
 			"nvl(max(object_name),'0GHOST0') " +
 			"from dba_objects " +
-			"where data_object_id="
-		q += strconv.FormatUint(uint64(b.objId), 10)
-		rows, err := DB.Query(q)
+			"where data_object_id=:1"
+		rows, err := DB.Query(q, b.objId)
 		if err == nil {
 			rows.Next()
 			rows.Scan(&b.objOwner, &b.objName)
 		}
+		ObjNames[b.objId] = b.objOwner + "." + b.objName
 
 		b.colorBlock()
 		//fmt.Println(b)
@@ -330,12 +342,14 @@ func main() {
 	banner()
 	ColorMap = make(map[string]int8)
 	LegendMap = make(map[string]Legend)
+	ObjNames = make(map[uint32]string)
 	ColorID = 0
 	lineSize := int64(32)
 	wordSize := int64(8)
 	var fname string
 	var conn string
 	var conn_asm string
+	printBlocks := true
 	conn_asm = "empty"
 	var block_size int64
 	if len(os.Args) < 6 {
@@ -351,6 +365,8 @@ func main() {
 			block_size, _ = strconv.ParseInt(os.Args[i+1], 10, 32)
 		} else if os.Args[i] == "-a" {
 			conn_asm = os.Args[i+1]
+		} else if os.Args[i] == "-rs" {
+			printBlocks = false
 		}
 	}
 
@@ -381,15 +397,17 @@ func main() {
 			f.Read(blockBytes)
 			blockReader := bytes.NewReader(blockBytes)
 			block_data.ParseBlock(blockReader, 0, block_size)
-			c := block_data.visualC.SprintFunc()
-			if i%lineSize == 0 || i == 0 {
-				fmt.Printf("%08d - %08d: %s", i+1, i+lineSize, c(block_data.visualS))
-			} else if i > 0 && (i+1)%(lineSize) == 0 {
-				fmt.Println("o ")
-			} else if (i+1)%wordSize == 0 {
-				fmt.Printf("%2s%s", c(block_data.visualS), " ")
-			} else {
-				fmt.Printf("%2s", c(block_data.visualS))
+			if printBlocks {
+				c := block_data.visualC.SprintFunc()
+				if i%lineSize == 0 || i == 0 {
+					fmt.Printf("%08d - %08d: %s", i+1, i+lineSize, c(block_data.visualS))
+				} else if i > 0 && (i+1)%(lineSize) == 0 {
+					fmt.Println("o ")
+				} else if (i+1)%wordSize == 0 {
+					fmt.Printf("%2s%s", c(block_data.visualS), " ")
+				} else {
+					fmt.Printf("%2s", c(block_data.visualS))
+				}
 			}
 		}
 	} else {
@@ -420,15 +438,17 @@ func main() {
 			blockBytes, _ := hex.DecodeString(block_data_s)
 			blockReader := bytes.NewReader(blockBytes)
 			block_data.ParseBlock(blockReader, 0, block_size)
-			c := block_data.visualC.SprintFunc()
-			if i%lineSize == 0 || i == 0 {
-				fmt.Printf("%08d - %08d: %s", i+1, i+lineSize, c(block_data.visualS))
-			} else if i > 0 && (i+1)%(lineSize) == 0 {
-				fmt.Println("o ")
-			} else if (i+1)%wordSize == 0 {
-				fmt.Printf("%2s%s", c(block_data.visualS), " ")
-			} else {
-				fmt.Printf("%2s", c(block_data.visualS))
+			if printBlocks {
+				c := block_data.visualC.SprintFunc()
+				if i%lineSize == 0 || i == 0 {
+					fmt.Printf("%08d - %08d: %s", i+1, i+lineSize, c(block_data.visualS))
+				} else if i > 0 && (i+1)%(lineSize) == 0 {
+					fmt.Println("o ")
+				} else if (i+1)%wordSize == 0 {
+					fmt.Printf("%2s%s", c(block_data.visualS), " ")
+				} else {
+					fmt.Printf("%2s", c(block_data.visualS))
+				}
 			}
 		}
 		ASM.Exec("begin dbms_diskgroup.close(:1) end;", fhandle)
